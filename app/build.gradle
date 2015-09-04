@@ -1,88 +1,104 @@
-apply plugin: 'com.android.application'
+apply plugin: 'com.android.model.application'
 
-android {
-    compileSdkVersion 22
-    buildToolsVersion "22.0.1"
-    sourceSets.main.jni.srcDirs = []
+model {
+    android {
+        compileSdkVersion = 22
+        buildToolsVersion = "22.0.1"
 
-    defaultConfig {
-        applicationId "com.davidawehr.cuda_example"
-        minSdkVersion 19
-        targetSdkVersion 22
-        versionCode 1
-        versionName "1.0"
-    }
-    buildTypes {
-        release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        defaultConfig.with {
+            applicationId = "com.davidawehr.cuda_example"
+            minSdkVersion.apiLevel = 19
+            targetSdkVersion.apiLevel = 22
+            versionCode = 1
+            versionName = "1.0"
         }
+
+        task compileCUDA(type: Exec) {
+            inputs.files "src/main/jni/nativeCUDA.cu",
+                    "src/main/jni/nativeCUDA.cuh"
+            outputs.file "src/main/jni/gpuCode.o"
+
+
+            def HOME = System.getProperty("user.home")
+            commandLine "$HOME/NVPACK/cuda-6.0/bin/nvcc",
+                    "-target-cpu-arch", "ARM",
+                    "-include", "/SDK/android-ndk-r10d/platforms/android-19/arch-arm/usr/include/android/log.h",
+                    "-ccbin", "arm-linux-gnueabihf-g++",
+                    "--compiler-options", "\'-fPIC\'",
+                    "-arch=sm_20",
+                    "-m32",
+                    "-c",
+                    "src/main/jni/nativeCUDA.cu",
+                    "-o", "src/main/jni/gpuCode.o"
+        }
+
+        task packageCUDA(type: Exec, dependsOn: 'compileCUDA') {
+            inputs.file "src/main/jni/gpuCode.o"
+            outputs.file "src/main/libgpuCode.a"
+
+            commandLine "ar",
+                    "rvs",
+                    "src/main/jni/libgpuCode.a",
+                    "src/main/jni/gpuCode.o"
+        }
+
+
+        task ndkBuild(type: Exec, dependsOn: 'packageCUDA') {
+            inputs.dir "src/main/jni"
+            outputs.dir "build/obj"
+
+            Properties properties = new Properties()
+            properties.load(project.rootProject.file('local.properties').newDataInputStream())
+            def ndkDir = properties.getProperty('ndk.dir')
+
+            commandLine "$ndkDir/ndk-build",
+                    'NDK_PROJECT_PATH=build',
+                    'APP_BUILD_SCRIPT=src/main/jni/Android.mk',
+                    'NDK_APPLICATION_MK=src/main/jni/Application.mk'
+        }
+
+        task ndkLibsToJar(type: Zip, dependsOn: 'ndkBuild') {
+            destinationDir new File(projectDir, 'libs')
+            baseName 'ndk-libs'
+            extension 'jar'
+            from(new File(buildDir, 'libs')) { include '**/*.so' }
+            into 'lib/'
+        }
+
+        tasks.withType(JavaCompile) {
+            compileTask -> compileTask.dependsOn ndkLibsToJar
+        }
+
     }
 
-    productFlavors {
-        armv7 {
-            ndk {
-                abiFilter "armeabi-v7a"
+    android.sources {
+        main {
+            java {
+                source {
+                    srcDirs = []
+                }
             }
         }
-        fat
     }
 
-
-    task compileCUDA(type: Exec) {
-        inputs.files "src/main/jni/nativeCUDA.cu",
-                "src/main/jni/nativeCUDA.cuh"
-        outputs.file "src/main/jni/gpuCode.o"
-
-
-        def HOME = System.getProperty("user.home")
-        commandLine "$HOME/NVPACK/cuda-6.0/bin/nvcc",
-                "-target-cpu-arch", "ARM",
-                "-include", "/SDK/android-ndk-r10d/platforms/android-19/arch-arm/usr/include/android/log.h",
-                "-ccbin", "arm-linux-gnueabihf-g++",
-                "--compiler-options", "\'-fPIC\'",
-                "-arch=sm_20",
-                "-m32",
-                "-c",
-                "src/main/jni/nativeCUDA.cu",
-                "-o", "src/main/jni/gpuCode.o"
+    android.buildTypes {
+        release {
+            ndk.with {
+                minifyEnabled = false
+                proguardFiles += file('proguard-rules.pro')
+                //proguardFiles += getDefaultProguardFile('proguard-android.txt')
+            }
+        }
     }
 
-    task packageCUDA(type: Exec, dependsOn: 'compileCUDA') {
-        inputs.file "src/main/jni/gpuCode.o"
-        outputs.file "src/main/libgpuCode.a"
-
-        commandLine "ar",
-                "rvs",
-                "src/main/jni/libgpuCode.a",
-                "src/main/jni/gpuCode.o"
+    android.productFlavors {
+        create("arm7") {
+            ndk.with {
+                abiFilters += "armeabi-v7a"
+            }
+        }
+        create("fat")
     }
-
-
-    task ndkBuild(type: Exec, dependsOn: 'packageCUDA') {
-        inputs.dir "src/main/jni"
-        outputs.dir "build/obj"
-
-        def ndkDir = plugins.getPlugin('com.android.application').sdkHandler.getNdkFolder()
-
-        commandLine "$ndkDir/ndk-build",
-                'NDK_PROJECT_PATH=build',
-                'APP_BUILD_SCRIPT=src/main/jni/Android.mk',
-                'NDK_APPLICATION_MK=src/main/jni/Application.mk'
-    }
-
-    task ndkLibsToJar(type: Zip, dependsOn: 'ndkBuild') {
-        destinationDir new File(projectDir, 'libs')
-        baseName 'ndk-libs'
-        extension 'jar'
-        from(new File(buildDir, 'libs')) { include '**/*.so' }
-        into 'lib/'
-    }
-
-    tasks.withType(JavaCompile) {
-        compileTask -> compileTask.dependsOn ndkLibsToJar
-    }
-
 }
 
 dependencies {
